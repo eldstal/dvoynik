@@ -1,0 +1,2 @@
+# dvoynik
+Detect doppelganger websites
