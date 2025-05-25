@@ -1,0 +1,198 @@
+#!/bin/env python3
+
+import argparse
+from multiprocessing import Queue, Process
+import queue
+import sys
+import time
+import random
+import traceback
+import os
+
+import requests
+import tqdm
+from playwright.sync_api import sync_playwright
+
+from util import domains_from_zonefile, lines_from_textfile, prefix_for_hostname, filename_for_url
+
+
+
+parser = argparse.ArgumentParser("Scan and screenshot a list of websites")
+parser.add_argument("-z", "--zonefile", type=str, default=None, help="DNS Zone file to read domains from")
+parser.add_argument("-d", "--domains", type=str, default=None, help="Text file of domains to query")
+parser.add_argument("-u", "--urls", type=str, default=None, help="Text file of URLs to query")
+parser.add_argument("-o", "--output", type=str, default=None, required=True, help="Output directory where screenshots are dumped")
+parser.add_argument("-c", "--clobber", action="store_true", help="Overwrite existing screenshots")
+
+parser.add_argument("-n", "--number-of-workers", type=int, default=1, help="Number of parallel fetches")
+
+
+conf = parser.parse_args()
+
+
+
+def quick_test_url(url):
+    try:
+        res = requests.get(url, verify=False, timeout=1)
+    except:
+        # Not a web host. No need to launch chrome.
+        return False
+
+    return True
+
+
+def snap(conf, target, browser):
+
+    url_options = []
+
+    if target.startswith("https://") or target.startswith("http://"):
+        url_options  = [ target ]
+    else:
+        url_options = [
+            f"http://{target}",
+            f"https://{target}"
+            f"http://www.{target}",
+            f"https://www.{target}"
+        ]
+
+    filepaths = [ filename_for_url(u) for u in url_options ]
+    filepaths = [ os.path.join(conf.output, p) for p in filepaths ]
+
+    if None in filepaths:
+        return (target, 4, "Invalid URL")
+
+    
+    if not conf.clobber and any([ os.path.exists(fp) for fp in filepaths ]):
+        # Don't overwrite that file. Just move on.
+        return (target, 2, "Already scanned")
+
+
+    url_options = list(filter(quick_test_url, url_options))
+
+    if len(url_options) == 0:
+        # Not a web host. No need to launch chrome.
+        return (target, 2, "No web service")
+
+    url = url_options[0]
+    filename = filename_for_url(url)
+    filepath = os.path.join(conf.output, filename)
+ 
+
+    #return (target, filepath)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+    # Connect and take a screenshot
+    page = browser.new_page()
+    page.goto(url)
+    page.screenshot(path=filepath)
+    page.close()
+
+
+    return (target, 1, "OK")
+
+
+def worker(conf, work_queue, result_queue):
+
+    # Don't spam the terminal because of everyone's messed up SSL configs
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        context = browser.new_context(ignore_https_errors=True)
+
+        while True:
+            target = work_queue.get()
+
+            if target == None:
+                break
+
+            try:
+                result = snap(conf, target, context)
+            except:
+                traceback.print_exc()
+                print("Ingoring that error and moving on to the next site.")
+                result = (target, 5, "Unhandled Exception")
+
+                context.close()
+                browser.close()
+                browser = playwright.chromium.launch()
+                context = browser.new_context(ignore_https_errors=True)
+
+            result_queue.put(result)
+
+        browser.close()
+        #print("Worker process terminating.")
+
+def start_workers(conf, work_queue, result_queue):
+    ret = []
+
+    for i in range(conf.number_of_workers):
+        w = Process(target=worker, args=(conf, work_queue, result_queue))
+        w.daemon = True
+        w.start()
+        ret.append(w)
+
+    return ret
+
+def stop_workers(conf, workers, work_queue):
+
+    while True:
+        try:
+            work_queue.get(block=False)
+        except queue.Empty:
+            break
+
+    for w in workers:
+        work_queue.put(None)
+
+    for w in workers:
+        w.join()
+
+    print("Terminated all workers.")
+
+    return []
+
+
+def main():
+
+    targets = [ ]
+
+    if conf.zonefile:
+        targets += domains_from_zonefile(conf.zonefile)
+
+    if conf.domains:
+        targets += lines_from_textfile(conf.domains)
+
+    if conf.urls:
+        targets += lines_from_textfile(conf.urls)
+
+    work_queue = Queue(maxsize=len(targets))
+    result_queue = Queue(maxsize=len(targets))
+
+    for t in targets:
+        work_queue.put(t)
+
+    workers = start_workers(conf, work_queue, result_queue)
+
+
+    try:
+        progress = tqdm.tqdm(range(len(targets)))
+        for i in progress:
+            target, severity, status = result_queue.get()
+            progress.set_description(f"{target:<30}")
+            if severity > 3:
+                progress.write(f"{target:<30}: {status}")
+    except Exception as e:
+        workers = stop_workers(conf, workers, work_queue)
+
+        raise e
+
+    workers = stop_workers(conf, workers, work_queue)
+
+
+    print("Exiting.")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

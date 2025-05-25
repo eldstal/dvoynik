@@ -2,5 +2,9 @@
 name = "dvoynik"
 version = "0.1"
 dependencies = [
-    "playwright"
+    "playwright",
+    "requests",
+    "tqdm",
+    "editdistance",
+    "idna"
 ]

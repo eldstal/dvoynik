@@ -1,0 +1,151 @@
+#!/bin/env python3
+
+import argparse
+from multiprocessing.pool import Pool
+from multiprocessing import Queue
+import queue
+import sys
+import time
+import random
+import traceback
+import os
+
+import idna
+import editdistance
+
+from util import domains_from_zonefile, lines_from_textfile
+
+parser = argparse.ArgumentParser("Scan and screenshot a list of websites")
+parser.add_argument("-z", "--all-zonefile", type=str, default=None, help="DNS Zone file to read domains from")
+parser.add_argument("-d", "--all-domains", type=str, default=None, help="Text file of domains to query")
+parser.add_argument("-D", "--target-domains", type=str, default=None, help="Find domains similar to the ones in this file")
+parser.add_argument("-T", "--targets", type=str, nargs="+", default=None, help="Find domains similar to these")
+parser.add_argument("-o", "--output", type=str, default=None, help="Output file, a list of domains")
+parser.add_argument("-t", "--threshold", type=float, default=0.1, help="Threshold for similarity, float 0...1 or int 1...inf . Higher value -> allow more differences")
+
+parser.add_argument("-n", "--number-of-workers", type=int, default=4, help="Number of parallel compute workers")
+
+
+conf = parser.parse_args()
+
+
+def edit_distance(a, b):
+    # Either of the two could be IDNA (punycode),
+    # as a means for homoglyph attacks and similar.
+    # Decode them both, so we can compare what the user sees
+    try:
+        a = idna.decode(a)
+    except:
+        pass
+
+    try:
+        b = idna.decode(b)
+    except:
+        pass
+
+    return editdistance.eval(a, b)
+
+def distance_below_threshold(a, b, threshold):
+    char_distance = edit_distance(a, b)
+
+    # If you specify a big number, it's an edit distance
+    char_threshold = int(threshold)
+
+    # If you specify a small number, it's a percentage of the max possible
+    if threshold < 1:
+        max_distance = max(len(a), len(b))
+        char_threshold = round(threshold * max_distance)
+
+    if char_threshold < 1:
+        char_threshold = 1
+
+    if char_threshold > min(len(a), len(b)):
+        char_threshold = min(len(a), len(b))
+
+    return char_distance <= char_threshold
+        
+
+def load_domains(conf):
+    all_domains = [ ]
+    if conf.all_zonefile:
+        all_domains += domains_from_zonefile(conf.all_zonefile)
+
+    if conf.all_domains:
+        all_domains += lines_from_textfile(conf.all_domains)
+
+    return all_domains
+
+
+def worker(target):
+
+    if len(all_domains) == 0:
+        sys.stderr.write("No domains loaded. Can't do anything.\n")
+        return
+
+    matches = 0
+    for contender in all_domains:
+        if distance_below_threshold(target, contender, conf.threshold):
+            result_queue.put(contender)
+            matches += 1
+
+    return matches
+
+
+
+
+all_domains = None
+result_queue = None
+
+def main():
+
+    global all_domains
+    global result_queue
+
+    targets = [ ]
+    all_domains = load_domains(conf)
+
+    if conf.target_domains:
+        targets += lines_from_textfile(conf.target_domains)
+
+    if conf.targets:
+        targets += conf.targets
+
+    if len(all_domains) == 0:
+        sys.stderr.write("No domains specified. Nothing to do.\n")
+        return
+
+    if len(targets) == 0:
+        sys.stderr.write("No target domains specified. Nothing to do.\n")
+        return
+
+
+    result_queue = Queue(maxsize=len(all_domains))
+    
+    pool = Pool(conf.number_of_workers)
+
+    results = pool.imap_unordered(worker, targets)
+
+
+    winners = []
+    for n_matches in results:
+
+        for i in range(n_matches):
+            contender = result_queue.get()
+            if contender not in winners:
+                winners.append(contender)
+                print(contender)
+    
+    pool.close()
+    pool.join()
+
+
+    if conf.output:
+        with open(conf.output, "a+") as f:
+            f.write("\n".join(winners))
+
+
+assert(edit_distance("a.se", "b.se") == 1)
+assert(edit_distance("xn--4ca.se", "b.se") == 1)
+
+if __name__ == "__main__":
+    sys.exit(main())
