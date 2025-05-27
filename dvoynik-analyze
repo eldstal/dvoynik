@@ -1,0 +1,172 @@
+#!/bin/env python3
+
+import argparse
+import os
+import json
+import glob
+import sys
+import shutil
+from multiprocessing.pool import Pool
+
+import tqdm
+import imagehash
+from PIL import Image
+from sklearn.cluster import DBSCAN
+import numpy as np
+
+
+parser = argparse.ArgumentParser("Analyze a set of screenshots to find similar ones")
+parser.add_argument("-w", "--workdir", type=str, default=None, required=True, help="Work directory from dvoynik-crawl")
+parser.add_argument("-t", "--threshold", type=float, default=0.1, help="Similarity threshold")
+parser.add_argument("-C", "--no-clustering", action="store_true", help="Skip all-images clustering. Will make search slower but analysis significantly faster.")
+
+parser.add_argument("-n", "--number-of-workers", type=int, default=4, help="Number of parallel computation processes")
+
+conf = parser.parse_args()
+
+viewer_source_dir = os.path.join(os.path.dirname(__file__), "viewer")
+screenshot_dir = os.path.join(conf.workdir, "screenshots")
+hash_db_path = os.path.join(conf.workdir, "hashes.json")
+cluster_db_path = os.path.join(conf.workdir, "clusters.json")
+
+
+# Given an image filename, calculate a percept
+def hash_worker(target):
+
+    image_path = os.path.join(screenshot_dir, target)
+
+    image_hash = imagehash.phash(Image.open(image_path))
+
+    return (target, int(str(image_hash), 16))
+
+
+def save_hash_database(hashdb):
+    json.dump(hashdb, open(hash_db_path, "w+"))
+
+def load_hash_database():
+    try:
+        db = json.load(open(hash_db_path, "r"))
+        return db
+    except:
+        return {"hashes": {} }
+
+def save_cluster_database(clusterdb):
+    json.dump(clusterdb, open(cluster_db_path, "w+"))
+
+def find_images(conf):
+    absolutes = glob.glob(f"{screenshot_dir}/**/*.png", recursive=True)
+    return [ os.path.relpath(p, screenshot_dir) for p in absolutes ]
+
+def ham_distance(a, b):
+    diff = int(a) ^ int(b)
+
+    dist = 0
+    while diff != 0:
+        dist += diff & 0x1
+        diff = diff >> 1
+
+    return dist
+
+def update_hashes(conf, hashdb, all_images):
+    known_hashes = set(hashdb["hashes"].keys())
+
+    unknown_hashes = all_images - known_hashes
+
+    if len(unknown_hashes) == 0:
+        print("Image hashes already computed. Continuing!")
+        return
+
+    print(f"Need to compute hashes for {len(unknown_hashes)} images.")
+    print("This is safe to interrupt, you won't lose much progress.")
+
+    pool = Pool(conf.number_of_workers)
+
+    results = pool.imap_unordered(hash_worker, unknown_hashes)
+
+
+    progress = tqdm.tqdm(results, total=len(unknown_hashes))
+
+    n_completed = 0
+    save_interval = 500
+    for r in progress:
+        if r is None: continue
+
+        image, image_hash = r
+        progress.set_description(f"{image:<30}")
+
+        hashdb["hashes"][image] = image_hash
+
+        n_completed += 1
+
+        if n_completed % save_interval == 0:
+            save_hash_database(hashdb)
+
+    print("Saving hashes to database...")
+    save_hash_database(hashdb)
+    
+    pool.close()
+    pool.join()
+
+
+def cluster_hashes(conf, hashdb):
+    
+    print("Clustering similar images...")
+    images = [ k for k in hashdb["hashes"].keys() ]
+    nodes = [ hashdb["hashes"][k] for k in images ]
+
+    nodes = np.array(nodes, dtype=np.uint64).reshape(-1, 1)
+
+    # This supports parallelization, but it -seriously- slows down with n>1
+    clusterer = DBSCAN(metric=ham_distance, min_samples=2, n_jobs=1)
+    clusterer.fit(nodes)
+    
+    labels = clusterer.labels_
+
+    if (len(labels) != len(images)):
+        print("Unexpected number of outputs. Something is wrong. Can't cluster!")
+        return
+
+    weighted = zip(images, labels)
+
+    clusters = {}
+    for image, label in weighted:
+        label = int(label)
+
+        if label == -1:
+            # This image is "noise" and doesn't belong to a cluster
+            continue
+
+        if label not in clusters:
+            clusters[label] = []
+        clusters[label].append(image)
+
+
+    return clusters
+
+def put_viewer(conf):
+    source_files = glob.glob(f"{viewer_source_dir}/*")
+
+    for f in source_files:
+        shutil.copy(f, conf.workdir)
+
+    
+
+        
+def main():
+
+    os.makedirs(conf.workdir, exist_ok=True)
+
+    hashdb = load_hash_database()
+
+    all_images = set(find_images(conf))
+
+    update_hashes(conf, hashdb, all_images)
+
+    if not conf.no_clustering:
+        clusterdb = cluster_hashes(conf, hashdb)
+        save_cluster_database(clusterdb)
+
+    put_viewer(conf)
+
+if __name__ == "__main__":
+    sys.exit(main())

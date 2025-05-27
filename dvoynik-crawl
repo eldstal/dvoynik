@@ -16,16 +16,14 @@ from playwright.sync_api import sync_playwright
 from util import domains_from_zonefile, lines_from_textfile, prefix_for_hostname, filename_for_url
 
 
-
 parser = argparse.ArgumentParser("Scan and screenshot a list of websites")
 parser.add_argument("-z", "--zonefile", type=str, default=None, help="DNS Zone file to read domains from")
 parser.add_argument("-d", "--domains", type=str, default=None, help="Text file of domains to query")
 parser.add_argument("-u", "--urls", type=str, default=None, help="Text file of URLs to query")
-parser.add_argument("-o", "--output", type=str, default=None, required=True, help="Output directory where screenshots are dumped")
+parser.add_argument("-w", "--workdir", type=str, default=None, required=True, help="Work directory where screenshots are saved")
 parser.add_argument("-c", "--clobber", action="store_true", help="Overwrite existing screenshots")
 
 parser.add_argument("-n", "--number-of-workers", type=int, default=1, help="Number of parallel fetches")
-
 
 conf = parser.parse_args()
 
@@ -56,7 +54,8 @@ def snap(conf, target, browser):
         ]
 
     filepaths = [ filename_for_url(u) for u in url_options ]
-    filepaths = [ os.path.join(conf.output, p) for p in filepaths ]
+    filepaths = [ os.path.join("screenshots", p) for p in filepaths ]
+    filepaths = [ os.path.join(conf.workdir, p) for p in filepaths ]
 
     if None in filepaths:
         return (target, 4, "Invalid URL")
@@ -75,7 +74,8 @@ def snap(conf, target, browser):
 
     url = url_options[0]
     filename = filename_for_url(url)
-    filepath = os.path.join(conf.output, filename)
+    filepath = os.path.join(conf.workdir, "screenshots")
+    filepath = os.path.join(filepath, filename)
  
 
     #return (target, filepath)

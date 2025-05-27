@@ -2,9 +2,10 @@
 name = "dvoynik"
 version = "0.1"
 dependencies = [
+    "editdistance",
+    "idna",
+    "imagehash",
     "playwright",
     "requests",
     "tqdm",
-    "editdistance",
-    "idna"
 ]

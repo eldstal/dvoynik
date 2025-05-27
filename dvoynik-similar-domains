@@ -15,7 +15,7 @@ import editdistance
 
 from util import domains_from_zonefile, lines_from_textfile
 
-parser = argparse.ArgumentParser("Scan and screenshot a list of websites")
+parser = argparse.ArgumentParser("Find domain names similar to targets")
 parser.add_argument("-z", "--all-zonefile", type=str, default=None, help="DNS Zone file to read domains from")
 parser.add_argument("-d", "--all-domains", type=str, default=None, help="Text file of domains to query")
 parser.add_argument("-D", "--target-domains", type=str, default=None, help="Find domains similar to the ones in this file")
