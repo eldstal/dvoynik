@@ -175,7 +175,7 @@ def cluster_hashes(conf, hashdb):
             continue
 
         if label not in clusters:
-            clusters[label] = { "images": {} }
+            clusters[label] = { "id": label, "images": {} }
 
         clusters[label]["images"][domain] = image
 

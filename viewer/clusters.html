@@ -3,25 +3,31 @@
 
 <head>
     <title>Dvoynik cluster viewer</title>
-    <link src="clusters.js">
-    <style src="clusters.css">
+    <script type="text/javascript" src="clusters.js"></script>
+    <style src="clusters.css"></style>
 </head>
 
 <body>
 
 <h1>Identified page clusters</h1>
 
-<span>Filter by URL</span><input type="text" id="filterurl" /><br />
+    <span>Filter by URL:</span>
+    <input type="text" id="filtertext" />
+    <button id="filter_refresh" onClick="refresh_cluster_list()">Refresh</button>
+    <br />
 
     <table>
         <thead>
         <tr>
-        <td>id</td>
-        <td>#sites</td>
-        <td>Preview</td>
+            <td>id</td>
+            <td>#sites</td>
+            <td>domains</td>
+            <td>Preview</td>
         </thead>
         <tbody id="clustertable">
         </tbody>
     </table>
+
 </body>
 </html>
+
