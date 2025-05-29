@@ -2,6 +2,8 @@ from urllib.parse import urlparse
 import re
 import os
 
+import requests
+
 def domains_from_zonefile(filename):
     ret = set()
 
@@ -43,6 +45,26 @@ def prefix_for_hostname(hostname):
         return ""
     else:
         return hostname[0:2]
+
+# Returns True if http://suspect_domain or https://suspect_domain
+# redirect to the target_domain
+def is_redirect_to(suspect_domain, target_domain):
+    options = [
+            f"http://{suspect_domain}",
+            f"https://{suspect_domain}"
+            ]
+
+    for url in options:
+        res = requests.get(url, allow_redirects=True)
+
+        for redir in [ res ] + res.history:
+            parsed = urlparse(redir.url)
+            if parsed.hostname == target_domain:
+                return True
+            if parsed.hostname.endswith("." + target_domain):
+                return True
+    return False
+
 
 def domain_from_filename(filename):
     base = os.path.basename(filename)

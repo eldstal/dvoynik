@@ -1,0 +1,150 @@
+#!/bin/env python3
+
+import argparse
+import os
+import json
+import glob
+import sys
+import shutil
+from multiprocessing.pool import Pool
+
+import tqdm
+import imagehash
+from PIL import Image
+from sklearn.cluster import DBSCAN
+import numpy as np
+
+from util import filename_for_url, domain_from_filename, lines_from_textfile, is_redirect_to
+
+
+parser = argparse.ArgumentParser("Search for sites visually similar to a given target")
+parser.add_argument("-w", "--workdir", type=str, default=None, required=True, help="Work directory from dvoynik-analyze")
+parser.add_argument("-D", "--target-domains", type=str, default=None, help="Find domains similar to the ones in this file")
+parser.add_argument("-T", "--targets", type=str, nargs="+", default=None, help="Find domains similar to these")
+parser.add_argument("-R", "--include-redirects", action="store_true", help="Also include domains which redirect to the target")
+parser.add_argument("-t", "--threshold", type=int, default=4, help="Similarity threshold, 0-64 where 0 is hash identical")
+parser.add_argument("-o", "--output", type=str, default=None, help="Output file, a list of domains")
+
+parser.add_argument("-n", "--number-of-workers", type=int, default=4, help="Number of parallel computation processes")
+
+conf = parser.parse_args()
+
+hash_db_path = os.path.join(conf.workdir, "hashes.json")
+screenshot_dir = os.path.join(conf.workdir, "screenshots")
+
+def ham_distance(a, b):
+    diff = int(a) ^ int(b)
+
+    dist = 0
+    while diff != 0:
+        dist += diff & 0x1
+        diff = diff >> 1
+
+    return dist
+
+# Given a site's hash and some target hashes, check if any of their
+# hamming distances are <= the threshold
+def hamming_worker(job):
+
+    contender_domain, image_hash, targets, threshold = job
+
+    for target_domain, target_hash in targets:
+        if ham_distance(image_hash, target_hash) <= threshold:
+
+            if conf.include_redirects:
+                return contender_domain
+            else:
+                if not is_redirect_to(contender_domain, target_domain):
+                    return contender_domain
+
+    return None
+
+
+def load_hash_database():
+    try:
+        db = json.load(open(hash_db_path, "r"))
+        return db
+    except:
+        return None
+
+
+all_domains = None
+result_queue = None
+
+        
+def main():
+
+    if not os.path.exists(conf.workdir):
+        sys.stderr.write("Workdir doesn't exist. You need to run dvoynik-crawl and then dvoynik-analyze.\n")
+        return
+
+    hashdb = load_hash_database()
+
+    if not hashdb:
+        sys.stderr.write("No hash database present. Have you run dvoynik-analyze on the workdir?")
+        return
+
+    targets = [ ]
+
+    if conf.target_domains:
+        targets += lines_from_textfile(conf.target_domains)
+
+    if conf.targets:
+        targets += conf.targets
+
+
+    if len(targets) == 0:
+        sys.stderr.write("No targets specified. Nothing to do.\n")
+        return
+
+    # Find hashes for all the target domains
+    target_hashes = []
+
+    for t in targets:
+        options = [
+                filename_for_url(f"http://{t}"),
+                filename_for_url(f"https://{t}")
+            ]
+
+        option_hashes = [ (t, hashdb["hashes"][o]) for o in options if o in hashdb["hashes"] ]
+
+        if len(option_hashes) == 0:
+            sys.stderr.write(f"No screenshot for target {t}. Include it in your dvoynik-crawl targets or you won't get any matches.\n")
+        target_hashes += option_hashes
+
+    if len(target_hashes) == 0:
+        sys.stderr.write("None of the supplied targets have been crawled. Can't search.\n")
+        return
+    
+
+    jobs = [ ]
+    for image,image_hash in hashdb["hashes"].items():
+        domain = domain_from_filename(image)
+        job = (domain, image_hash, target_hashes, conf.threshold)
+        jobs.append(job)
+    
+    pool = Pool(conf.number_of_workers)
+
+    results = pool.imap_unordered(hamming_worker, jobs)
+
+    progress = tqdm.tqdm(results, total=len(jobs))
+
+    winners = []
+    for contender in progress:
+        if contender is None: continue
+
+        if contender not in winners:
+            winners.append(contender)
+            progress.write(contender)
+    
+    pool.close()
+    pool.join()
+
+    if conf.output:
+        with open(conf.output, "a+") as f:
+            f.write("\n".join(winners))
+
+
+
+if __name__ == "__main__":
+    sys.exit(main())

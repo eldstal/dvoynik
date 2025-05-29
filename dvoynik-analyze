@@ -124,7 +124,7 @@ def update_hashes(conf, hashdb, all_images):
     progress = tqdm.tqdm(results, total=len(unknown_hashes))
 
     n_completed = 0
-    save_interval = 500
+    save_interval = max(500, len(unknown_hashes) // 100)
     for r in progress:
         if r is None: continue
 
