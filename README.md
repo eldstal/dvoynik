@@ -15,7 +15,7 @@ playwright install
 If you happen to have a DNS zone file (or otherwise large listing of registered domain),
 you can start by finding domains that are similar to the legitimate sites you're interested in.
 
-This takes puny code domains into account, so `exampłe.com` is identified as similar to the legitimate `example.com`.
+This takes punycode domains into account, so `exampłe.com` is identified as similar to the legitimate `example.com`.
 ```
 dvoynik-similar-domains --all-domains long-list-of-domains.txt --target-domains list-of-legitimate-domains.txt --output fishy-domains.txt
 ```
