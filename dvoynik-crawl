@@ -8,6 +8,8 @@ import time
 import random
 import traceback
 import os
+import json
+import re
 
 import requests
 import tqdm
@@ -19,7 +21,6 @@ from util import domains_from_zonefile, lines_from_textfile, prefix_for_hostname
 parser = argparse.ArgumentParser("Scan and screenshot a list of websites")
 parser.add_argument("-z", "--zonefile", type=str, default=None, help="DNS Zone file to read domains from")
 parser.add_argument("-d", "--domains", type=str, default=None, help="Text file of domains to query")
-parser.add_argument("-u", "--urls", type=str, default=None, help="Text file of URLs to query")
 parser.add_argument("-w", "--workdir", type=str, default=None, required=True, help="Work directory where screenshots are saved")
 parser.add_argument("-c", "--clobber", action="store_true", help="Overwrite existing screenshots")
 
@@ -27,19 +28,43 @@ parser.add_argument("-n", "--number-of-workers", type=int, default=1, help="Numb
 
 conf = parser.parse_args()
 
+meta_db_path = os.path.join(conf.workdir, "metadata.json")
+screenshot_dir = os.path.join(conf.workdir, "screenshots")
 
+
+def save_meta_database(hashdb):
+    json.dump(hashdb, open(meta_db_path, "w+"))
+
+def load_meta_database():
+    try:
+        db = json.load(open(meta_db_path, "r"))
+        return db
+    except:
+        return { "metadata": {} }
 
 def quick_test_url(url):
     try:
-        res = requests.get(url, verify=False, timeout=1)
+        res = requests.get(url, verify=False, timeout=0.5, allow_redirects=True)
+        if res.status_code != 200: return False
     except:
         # Not a web host. No need to launch chrome.
         return False
 
     return True
 
+def fetch_page_metadata(url, metadata):
+    metadata["url"] = url
 
-def snap(conf, target, browser):
+    res = requests.get(url, verify=False, timeout=1, allow_redirects=True)
+
+    re_title = re.compile("<title>(?P<title>[^<]*)<\/title>", re.M | re.I)
+    m = re_title.search(res.text)
+    if m:
+        metadata["title"] = m.group("title").strip()
+
+    return metadata
+
+def snapshot_target(conf, target, metadata, browser):
 
     url_options = []
 
@@ -47,48 +72,57 @@ def snap(conf, target, browser):
         url_options  = [ target ]
     else:
         url_options = [
+            f"https://{target}",
+            f"https://www.{target}",
             f"http://{target}",
-            f"https://{target}"
             f"http://www.{target}",
-            f"https://www.{target}"
         ]
 
     filepaths = [ filename_for_url(u) for u in url_options ]
-    filepaths = [ os.path.join("screenshots", p) for p in filepaths ]
-    filepaths = [ os.path.join(conf.workdir, p) for p in filepaths ]
+    filepaths = [ os.path.join(screenshot_dir, p) for p in filepaths ]
 
     if None in filepaths:
-        return (target, 4, "Invalid URL")
+        return (target, None, 4, "Invalid URL")
 
-    
-    if not conf.clobber and any([ os.path.exists(fp) for fp in filepaths ]):
-        # Don't overwrite that file. Just move on.
-        return (target, 2, "Already scanned")
+    url = None
+    for option in url_options:
+        if quick_test_url(option):
+            url = option
+            break
 
-
-    url_options = list(filter(quick_test_url, url_options))
-
-    if len(url_options) == 0:
+    if not url:
         # Not a web host. No need to launch chrome.
-        return (target, 2, "No web service")
+        return (target, None, 2, "No web service")
 
     url = url_options[0]
     filename = filename_for_url(url)
-    filepath = os.path.join(conf.workdir, "screenshots")
-    filepath = os.path.join(filepath, filename)
- 
+    filepath = os.path.join(screenshot_dir, filename)
 
-    #return (target, filepath)
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    screenshot_already_exists = False
+    for fp in filepaths:
+        if os.path.exists(fp):
+            screenshot_already_exists = True
+            metadata["screenshot"] = os.path.relpath(fp, screenshot_dir)
 
-    # Connect and take a screenshot
-    page = browser.new_page()
-    page.goto(url)
-    page.screenshot(path=filepath)
-    page.close()
+    # Don't bother screenshotting again
+    if not conf.clobber and screenshot_already_exists:
+        # Don't overwrite that file. Just move on.
+        pass
+
+    else:
+
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        # Connect and take a screenshot
+        page = browser.new_page()
+        page.goto(url)
+        page.screenshot(path=filepath)
+        page.close()
+    
+        metadata = fetch_page_metadata(url, metadata)
 
 
-    return (target, 1, "OK")
+    return (target, metadata, 1, "OK")
 
 
 def worker(conf, work_queue, result_queue):
@@ -102,19 +136,21 @@ def worker(conf, work_queue, result_queue):
         context = browser.new_context(ignore_https_errors=True)
 
         while True:
-            target = work_queue.get()
+            job = work_queue.get()
 
-            if target == None:
+            if job == None:
                 break
 
+            target, metadata = job
+
             try:
-                result = snap(conf, target, context)
+                result = snapshot_target(conf, target, metadata, context)
             except TimeoutError:
-                result = (target, 4, "Timeout")
+                result = (target, None, 4, "Timeout")
             except:
-                traceback.print_exc()
-                print("Ingoring that error and moving on to the next site.")
-                result = (target, 5, "Unhandled Exception")
+                #traceback.print_exc()
+                #print("Ignoring that error and moving on to the next site.")
+                result = (target, None, 5, "Unhandled Exception")
 
                 context.close()
                 browser.close()
@@ -160,31 +196,41 @@ def main():
 
     targets = [ ]
 
+    metadb = load_meta_database()
+
     if conf.zonefile:
         targets += domains_from_zonefile(conf.zonefile)
 
     if conf.domains:
         targets += lines_from_textfile(conf.domains)
 
-    if conf.urls:
-        targets += lines_from_textfile(conf.urls)
-
     work_queue = Queue(maxsize=len(targets))
     result_queue = Queue(maxsize=len(targets))
 
     for t in targets:
-        work_queue.put(t)
+        metadata = metadb["metadata"].get(t, {})
+        work_queue.put((t, metadata))
 
     workers = start_workers(conf, work_queue, result_queue)
 
 
+    n_completed = 0
+    save_interval = max(500, len(targets) // 100)
     try:
         progress = tqdm.tqdm(range(len(targets)))
         for i in progress:
-            target, severity, status = result_queue.get()
+            target, metadata, severity, status = result_queue.get()
             progress.set_description(f"{target:<30}")
             if severity > 3:
                 progress.write(f"{target:<30}: {status}")
+
+            if metadata:
+                metadb["metadata"][target] = metadata
+
+                n_completed += 1
+                if n_completed % save_interval == 0:
+                    save_meta_database(metadb)
+
     except Exception as e:
         workers = stop_workers(conf, workers, work_queue)
 
@@ -192,6 +238,7 @@ def main():
 
     workers = stop_workers(conf, workers, work_queue)
 
+    save_meta_database(metadb)
 
     print("Exiting.")
 

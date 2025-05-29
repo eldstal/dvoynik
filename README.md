@@ -1,5 +1,5 @@
 # dvoynik
-Detect doppelganger websites by their appearance.
+Detect doppelganger websites by their appearance and page title.
 
 Dvoynik crawls and screenshots websites from a list of domains, then uses a
 perceptive hash and a clustering algorithm to identify sites which look alike.

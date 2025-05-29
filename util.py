@@ -55,7 +55,10 @@ def is_redirect_to(suspect_domain, target_domain):
             ]
 
     for url in options:
-        res = requests.get(url, allow_redirects=True)
+        try:
+            res = requests.get(url, allow_redirects=True)
+        except:
+            continue
 
         for redir in [ res ] + res.history:
             parsed = urlparse(redir.url)
@@ -68,7 +71,7 @@ def is_redirect_to(suspect_domain, target_domain):
 
 def domain_from_filename(filename):
     base = os.path.basename(filename)
-    return re.sub("\.http(s?)\.png$", "", base)
+    return re.sub("(\.http(s?))?\.png$", "", base)
 
 def filename_for_url(url):
 
@@ -80,7 +83,7 @@ def filename_for_url(url):
 
     prefix = prefix_for_hostname(parsed.hostname)
 
-    filename = f"{prefix}/{parsed.hostname}.{parsed.scheme}.png"
+    filename = f"{prefix}/{parsed.hostname}.png"
 
     if filename[0] == "/": filename = filename[1:]
 

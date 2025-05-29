@@ -68,9 +68,6 @@ def load_hash_database():
         return None
 
 
-all_domains = None
-result_queue = None
-
         
 def main():
 
@@ -109,7 +106,7 @@ def main():
         option_hashes = [ (t, hashdb["hashes"][o]) for o in options if o in hashdb["hashes"] ]
 
         if len(option_hashes) == 0:
-            sys.stderr.write(f"No screenshot for target {t}. Include it in your dvoynik-crawl targets or you won't get any matches.\n")
+            sys.stderr.write(f"No screenshot for target {t}. It may have been missing from dvoynik-crawl targets or maybe it's not a website.\n")
         target_hashes += option_hashes
 
     if len(target_hashes) == 0:
