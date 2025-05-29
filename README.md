@@ -24,7 +24,11 @@ dvoynik-analyze --workdir working-directory/
 ```
 
 
-## 4. Search the report
+## 4. Browse clusters of similar sites
 ```
-dvoynik-search --workdir working-directory/ --domains list-of-interesting-domains.txt
+cd working-directory
+python3 -m http-server 8000
 ```
+
+vist http://127.0.0.1:8000 and click and search!
+
