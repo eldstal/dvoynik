@@ -1,4 +1,5 @@
 from urllib.parse import urlparse
+import re
 import os
 
 def domains_from_zonefile(filename):
@@ -42,6 +43,10 @@ def prefix_for_hostname(hostname):
         return ""
     else:
         return hostname[0:2]
+
+def domain_from_filename(filename):
+    base = os.path.basename(filename)
+    return re.sub("\.http(s?)\.png$", "", base)
 
 def filename_for_url(url):
 

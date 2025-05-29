@@ -14,23 +14,26 @@ from PIL import Image
 from sklearn.cluster import DBSCAN
 import numpy as np
 
+from util import domain_from_filename
+
 
 parser = argparse.ArgumentParser("Analyze a set of screenshots to find similar ones")
 parser.add_argument("-w", "--workdir", type=str, default=None, required=True, help="Work directory from dvoynik-crawl")
-parser.add_argument("-t", "--threshold", type=float, default=0.1, help="Similarity threshold")
+parser.add_argument("-t", "--threshold", type=float, default=4, help="Similarity threshold, higher is less precise")
 parser.add_argument("-C", "--no-clustering", action="store_true", help="Skip all-images clustering. Will make search slower but analysis significantly faster.")
 
 parser.add_argument("-n", "--number-of-workers", type=int, default=4, help="Number of parallel computation processes")
 
 conf = parser.parse_args()
 
-viewer_source_dir = os.path.join(os.path.dirname(__file__), "viewer")
-screenshot_dir = os.path.join(conf.workdir, "screenshots")
 hash_db_path = os.path.join(conf.workdir, "hashes.json")
 cluster_db_path = os.path.join(conf.workdir, "clusters.json")
+viewer_source_dir = os.path.join(os.path.dirname(__file__), "viewer")
+screenshot_dir = os.path.join(conf.workdir, "screenshots")
+cluster_preview_dir = os.path.join(conf.workdir, "cluster_thumbnails")
 
 
-# Given an image filename, calculate a percept
+# Given an image filename, calculate a perceptual hash
 def hash_worker(target):
 
     image_path = os.path.join(screenshot_dir, target)
@@ -38,6 +41,33 @@ def hash_worker(target):
     image_hash = imagehash.phash(Image.open(image_path))
 
     return (target, int(str(image_hash), 16))
+
+
+# Given an input image path and an output path,
+# make an image thumbnail
+def thumbnail_worker(job):
+
+        source_path, dest_path = job
+        max_dim = 200
+
+        if os.path.exists(dest_path): return dest_path
+
+        i = Image.open(source_path)
+        full_w,full_h = i.size[0], i.size[1]
+
+        max_w = max_dim
+        max_h = max_dim
+        ratio = min(full_w/max_w, full_h/max_h)
+
+        w, h = int(full_w / ratio), int(full_h / ratio)
+
+        thumbnail = i.resize((w,h), Image.Resampling.LANCZOS)
+
+        thumbnail.save(dest_path)
+
+        return dest_path
+
+
 
 
 def save_hash_database(hashdb):
@@ -48,7 +78,14 @@ def load_hash_database():
         db = json.load(open(hash_db_path, "r"))
         return db
     except:
-        return {"hashes": {} }
+        return { "hashes": {} }
+
+def load_cluster_database():
+    try:
+        db = json.load(open(cluster_db_path, "r"))
+        return db
+    except:
+        return { "clusters": {} }
 
 def save_cluster_database(clusterdb):
     json.dump(clusterdb, open(cluster_db_path, "w+"))
@@ -117,7 +154,7 @@ def cluster_hashes(conf, hashdb):
     nodes = np.array(nodes, dtype=np.uint64).reshape(-1, 1)
 
     # This supports parallelization, but it -seriously- slows down with n>1
-    clusterer = DBSCAN(metric=ham_distance, min_samples=2, n_jobs=1)
+    clusterer = DBSCAN(metric=ham_distance, min_samples=2, eps=conf.threshold, n_jobs=1)
     clusterer.fit(nodes)
     
     labels = clusterer.labels_
@@ -131,17 +168,76 @@ def cluster_hashes(conf, hashdb):
     clusters = {}
     for image, label in weighted:
         label = int(label)
+        domain = domain_from_filename(image)
 
         if label == -1:
             # This image is "noise" and doesn't belong to a cluster
             continue
 
         if label not in clusters:
-            clusters[label] = []
-        clusters[label].append(image)
+            clusters[label] = { "images": {} }
+
+        clusters[label]["images"][domain] = image
 
 
-    return clusters
+    return { "clusters" : clusters }
+
+
+def make_cluster_previews(conf, clusterdb):
+
+    print("Generating thumbnails...")
+    thumbnail_jobs = []
+
+    for cluster_id in clusterdb["clusters"].keys():
+        images = clusterdb["clusters"][cluster_id]["images"]
+
+        this_cluster_thumbnail = os.path.join(cluster_preview_dir, f"{cluster_id}.png")
+        rel_this_cluster_thumbnail = os.path.relpath(this_cluster_thumbnail, cluster_preview_dir)
+        this_cluster_dir = os.path.join(cluster_preview_dir, f"{cluster_id}")
+
+        os.makedirs(this_cluster_dir, exist_ok=True)
+        have_set_cluster_thumbnail = False
+
+        clusterdb["clusters"][cluster_id]["thumbnails"] = {}
+
+
+        for domain,image in images.items():
+
+            source_path = os.path.join(screenshot_dir, image)
+            thumbnail_path = os.path.join(this_cluster_dir, os.path.basename(image))
+            rel_thumbnail_path = os.path.relpath(thumbnail_path, cluster_preview_dir)
+            #thumbnail_worker(source_path, thumbnail_path)
+            thumbnail_jobs.append((source_path, thumbnail_path))
+
+            if not have_set_cluster_thumbnail:
+                #thumbnail_worker(source_path, this_cluster_thumbnail)
+                thumbnail_jobs.append((source_path, this_cluster_thumbnail))
+                clusterdb["clusters"][cluster_id]["thumbnail"] = rel_this_cluster_thumbnail
+                have_set_cluster_thumbnail = True
+
+            clusterdb["clusters"][cluster_id]["thumbnails"][domain] = rel_thumbnail_path
+
+
+    pool = Pool(conf.number_of_workers)
+
+    results = pool.imap_unordered(thumbnail_worker, thumbnail_jobs)
+    progress = tqdm.tqdm(results, total=len(thumbnail_jobs))
+
+    for r in progress:
+        if r is None: continue
+
+        dest_path = r
+        filename = os.path.basename(dest_path)
+        progress.set_description(f"{filename:<30}")
+
+    pool.close()
+    pool.join()
+            
+
+
+
+    
+    
 
 def put_viewer(conf):
     source_files = glob.glob(f"{viewer_source_dir}/*")
@@ -162,11 +258,17 @@ def main():
 
     update_hashes(conf, hashdb, all_images)
 
+    clusterdb = load_cluster_database()
+
     if not conf.no_clustering:
         clusterdb = cluster_hashes(conf, hashdb)
         save_cluster_database(clusterdb)
 
+    make_cluster_previews(conf, clusterdb)
+    save_cluster_database(clusterdb)
+
     put_viewer(conf)
+
 
 if __name__ == "__main__":
     sys.exit(main())
